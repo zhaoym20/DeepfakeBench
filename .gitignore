@@ -5,3 +5,7 @@
 *.pth
 *.pt
 *.dat
+datasets/rgb/
+preprocessing/debuger.ipynb
+datasets/rgb/
+preprocessing/debuger.ipynb
