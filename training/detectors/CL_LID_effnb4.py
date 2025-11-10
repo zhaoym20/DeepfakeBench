@@ -323,89 +323,149 @@ class CL_LIDEfficientDetector(AbstractDetector):
         return means
 
     def get_losses(self, data_dict: dict, pred_dict: dict) -> dict:
+        """Compute loss dict robustly to avoid NaNs and fix KD logic.
+
+        Terms:
+        - CE on current (or all if frozen)
+        - SupCon on replay+current features (optional)
+        - Feature Distillation on replay features (optional)
+        - Knowledge Distillation raw KL term (no CE mixing here)
+        """
+
+        # 1) Prep labels and logits
         label = data_dict['label']
+        if label.dtype != torch.long:
+            label = label.long()
+            data_dict['label'] = label
         pred = pred_dict['cls']
-        new_input_size = label.shape[0]
-        outputs=pred
-        feature=pred_dict['feat']
-        start=0
-        base_length=self.config['mem_each_batch']*2#self.config['train_batchSize']
-        seperate_feat=[]
+        feat_map = pred_dict.get('feat')
+        feat_2d = pred_dict.get('feat_2d')
+        new_bs = int(label.shape[0])
+        total_bs = int(pred.shape[0])
 
-        UUID_list=[]
-        UUID_init=0
-        loss_supcon=0
-        if pred.shape[0]>new_input_size:
-            # print_cpu_gpu_usage(title="loc-6")
-            feature_2d = pred_dict['feat_2d']
-            norm_feat = F.normalize(feature_2d)
-            old_label=torch.empty((0)).cuda()
-            for index in range(self.continual_index):
-
-                if self.config.get('feat_aug',False):
-                    norm_feat[start:start+self.config['mem_each_batch']]=self.feature_aug(norm_feat[start:start+self.config['mem_each_batch']],self.fake_center_array[index].cuda()) # 作为一种更强的向心约束
-                    norm_feat[start+self.config['mem_each_batch']:start+2*self.config['mem_each_batch']] = self.feature_aug(
-                        norm_feat[start+self.config['mem_each_batch']:start+2*self.config['mem_each_batch']], self.real_center_array[index].cuda())  # 作为一种更强的向心约束
-                ones=torch.ones(self.config['mem_each_batch']).cuda()
-                zeros = torch.zeros(self.config['mem_each_batch']).cuda()
-                old_label=torch.cat((old_label, ones, zeros))
-                UUID_list+=[UUID_init]*self.config['mem_each_batch']*2
-                UUID_init+=1
-                start = base_length
-                base_length = base_length+self.config['mem_each_batch']*2
-            UUID_list+=[UUID_init]*new_input_size # pred.shape[0]
-            label=torch.cat((old_label,label),dim=0)
-            data_dict['label']=label
+        # 2) SupCon for replay+current
+        loss_supcon = torch.tensor(0.0, device=pred.device)
+        UUID_list = []
+        if total_bs > new_bs and feat_2d is not None:
             try:
-                supcon_label = torch.tensor(UUID_list).cuda() * 10 + label
-                if self.config.get('protocol','P1')=='P2':
-                    for idx, l in enumerate(label):
-                        if l == 0:
-                            supcon_label[idx] = 0
+                norm_feat = F.normalize(feat_2d)
+                start = 0
+                base_len = self.config['mem_each_batch'] * 2
+                old_label = torch.empty((0,), dtype=torch.long, device=label.device)
+                UUID_init = 0
+                for index in range(self.continual_index):
+                    if self.config.get('feat_aug', False):
+                        norm_feat[start:start + self.config['mem_each_batch']] = self.feature_aug(
+                            norm_feat[start:start + self.config['mem_each_batch']], self.fake_center_array[index].cuda())
+                        norm_feat[start + self.config['mem_each_batch']: start + 2 * self.config['mem_each_batch']] = self.feature_aug(
+                            norm_feat[start + self.config['mem_each_batch']: start + 2 * self.config['mem_each_batch']], self.real_center_array[index].cuda())
+                    ones = torch.ones(self.config['mem_each_batch'], dtype=torch.long, device=label.device)
+                    zeros = torch.zeros(self.config['mem_each_batch'], dtype=torch.long, device=label.device)
+                    old_label = torch.cat((old_label, ones, zeros))
+                    UUID_list += [UUID_init] * (self.config['mem_each_batch'] * 2)
+                    UUID_init += 1
+                    start = base_len
+                    base_len += self.config['mem_each_batch'] * 2
+                UUID_list += [UUID_init] * new_bs
+                label = torch.cat((old_label, label.long()), dim=0)
+                data_dict['label'] = label
+                supcon_label = torch.tensor(UUID_list, device=label.device, dtype=torch.long) * 10 + label
+                if self.config.get('protocol', 'P1') == 'P2':
+                    is_real = (label == 0)
+                    supcon_label[is_real] = 0
                 loss_supcon = self.supcon_loss(norm_feat, supcon_label)
-
+                if not torch.isfinite(loss_supcon):
+                    loss_supcon = torch.zeros((), device=pred.device)
             except Exception as e:
                 logger.warning(e)
-                logger.info(feature_2d.shape)
-                logger.info(torch.tensor(UUID_list).cuda() * 10 + label)
-                loss_supcon=0
-            # supcon_loss(torch.cat((norm_feat.unsqueeze(1), norm_feat.unsqueeze(1)), dim=1),
-            #             torch.tensor(UUID_list).cuda() * 10 + label, temperature=self.config.get('temperature', 0.1))
-            # loss_supcon=supcon_loss(norm_feat.unsqueeze(1), torch.tensor(UUID_list).cuda() * 10 + label,
-            #             temperature=self.config.get('temperature',0.1))
+                loss_supcon = torch.zeros((), device=pred.device)
+
+        # 3) CE (avoid mixing CE inside KD)
         if self.config.get('frozen', 'semi'):
-            loss_ce = self.loss_func(pred, label)
+            loss_ce = self.loss_func(pred, label.long())
         else:
-            loss_ce = self.loss_func(pred[-new_input_size:], label[-new_input_size:])
-        loss= loss_ce+loss_supcon*self.config.get('supcon_weight',0.1)
-        loss_dict = {'overall': loss,'loss_ce':loss_ce,'loss_supcon':loss_supcon}
-        if 'tea_out' in pred_dict:
-            # teacher_feature = pred_dict['tea_feat']
-            teacher_outputs = pred_dict['tea_out']
-            old_teacher_feature = pred_dict['tea_feat']
-            old_feature = feature[:-new_input_size]
-            loss_fd = loss_FD(old_feature, old_teacher_feature)  # calculate FD_loss # loss_fd需要放大
-            #
-            loss_kd = loss_fn_kd(outputs[:-new_input_size], label[:-new_input_size], teacher_outputs, T=20.0, alpha=0.3)  # calculate KD_Loss
-            if self.config.get('protocol', 'P1') == 'P1' and self.config.get('sup_task_weight',0)>0:
-                loss_supcon_task=self.supcon_loss(norm_feat,torch.tensor(UUID_list).cuda())
-                loss_dict['loss_sup_task'] = loss_supcon_task
-                loss_dict['overall'] += loss_supcon_task*self.config.get('sup_task_weight',0.1)
-            loss_dict['loss_fd']=loss_fd
-            loss_dict['overall']+=loss_fd*self.config.get('fd_weight',1.0)
-            loss_dict['loss_kd']=loss_kd*self.config.get('kd_weight',1.0)
-            loss_dict['overall']+=loss_kd
-            if torch.isnan(loss_dict['overall']).any():
-                logger.info(loss_dict)
-                for key,val in loss_dict.items():
-                    loss_dict[key]=0
-                logger.warning('datadict,preddict,pred,label')
-                logger.info(data_dict)
-                logger.info(pred_dict)
-                logger.info(pred)
-                logger.info(label)
-                logger.warning('loss_overall encounter NaN')
-                logger.info('')
+            loss_ce = self.loss_func(pred[-new_bs:], label[-new_bs:].long())
+        if not torch.isfinite(loss_ce):
+            loss_ce = torch.zeros((), device=pred.device)
+
+        # 4) FD and KD (only when replay exists)
+        loss_fd = torch.tensor(0.0, device=pred.device)
+        loss_kd = torch.tensor(0.0, device=pred.device)  # raw KD (KL) only
+        if 'tea_out' in pred_dict and total_bs > new_bs:
+            teacher_logits = pred_dict['tea_out']
+            teacher_feat = pred_dict.get('tea_feat')
+            student_old_logits = pred[:-new_bs]
+
+            # FD
+            if teacher_feat is not None and feat_map is not None and feat_map.shape[0] > new_bs:
+                try:
+                    student_old_feat = feat_map[:-new_bs]
+                    loss_fd = loss_FD(student_old_feat, teacher_feat)
+                    if not torch.isfinite(loss_fd):
+                        loss_fd = torch.zeros((), device=pred.device)
+                except Exception as e:
+                    logger.warning(f"FD loss failed: {e}")
+                    loss_fd = torch.zeros((), device=pred.device)
+
+            # KD (stable KLDiv with soft targets)
+            if student_old_logits.shape[0] == teacher_logits.shape[0] and student_old_logits.shape[0] > 0:
+                try:
+                    T = float(self.config.get('kd_T', 20.0))
+                    log_p_s = F.log_softmax(student_old_logits / T, dim=1)
+                    with torch.no_grad():
+                        p_t = F.softmax(teacher_logits / T, dim=1)
+                        p_t = torch.clamp(p_t, min=1e-12)
+                        p_t = p_t / p_t.sum(dim=1, keepdim=True)
+                    loss_kd = F.kl_div(log_p_s, p_t, reduction='batchmean') * (T * T)
+                    if not torch.isfinite(loss_kd):
+                        loss_kd = torch.zeros((), device=pred.device)
+                except Exception as e:
+                    logger.warning(f"KD loss failed: {e}")
+                    loss_kd = torch.zeros((), device=pred.device)
+
+        # 5) Optional task-level supcon
+        loss_sup_task = torch.tensor(0.0, device=pred.device)
+        if total_bs > new_bs and self.config.get('protocol', 'P1') == 'P1' and self.config.get('sup_task_weight', 0) > 0 and feat_2d is not None:
+            try:
+                norm_feat = F.normalize(feat_2d)
+                loss_sup_task = self.supcon_loss(norm_feat, torch.tensor(UUID_list, device=label.device, dtype=torch.long))
+                if not torch.isfinite(loss_sup_task):
+                    loss_sup_task = torch.zeros((), device=pred.device)
+            except Exception as e:
+                logger.warning(f"Sup-task loss failed: {e}")
+                loss_sup_task = torch.zeros((), device=pred.device)
+
+        # 6) Aggregate with weights
+        supcon_w = float(self.config.get('supcon_weight', 0.1))
+        fd_w = float(self.config.get('fd_weight', 1.0))
+        kd_w = float(self.config.get('kd_weight', 1.0))
+        kd_alpha = float(self.config.get('kd_alpha', 0.3))
+        sup_task_w = float(self.config.get('sup_task_weight', 0.0))
+
+        overall = loss_ce + supcon_w * loss_supcon + fd_w * loss_fd + kd_w * kd_alpha * loss_kd
+        if sup_task_w > 0:
+            overall = overall + sup_task_w * loss_sup_task
+
+        if not torch.isfinite(overall):
+            logger.warning('overall loss encountered non-finite values; applying nan_to_num')
+            loss_ce = torch.nan_to_num(loss_ce, nan=0.0, posinf=0.0, neginf=0.0)
+            loss_supcon = torch.nan_to_num(loss_supcon, nan=0.0, posinf=0.0, neginf=0.0)
+            loss_fd = torch.nan_to_num(loss_fd, nan=0.0, posinf=0.0, neginf=0.0)
+            loss_kd = torch.nan_to_num(loss_kd, nan=0.0, posinf=0.0, neginf=0.0)
+            loss_sup_task = torch.nan_to_num(loss_sup_task, nan=0.0, posinf=0.0, neginf=0.0)
+            overall = loss_ce + supcon_w * loss_supcon + fd_w * loss_fd + kd_w * kd_alpha * loss_kd + sup_task_w * loss_sup_task
+
+        loss_dict = {
+            'overall': overall,
+            'loss_ce': loss_ce,
+            'loss_supcon': loss_supcon,
+        }
+        if total_bs > new_bs:
+            loss_dict['loss_fd'] = loss_fd
+            loss_dict['loss_kd'] = loss_kd
+            if sup_task_w > 0:
+                loss_dict['loss_sup_task'] = loss_sup_task
+
         return loss_dict
     
     def get_train_metrics(self, data_dict: dict, pred_dict: dict) -> dict:

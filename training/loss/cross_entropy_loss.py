@@ -1,3 +1,4 @@
+import torch
 import torch.nn as nn
 from .abstract_loss_func import AbstractLossClass
 from metrics.registry import LOSSFUNC
@@ -21,6 +22,9 @@ class CrossEntropyLoss(AbstractLossClass):
             A scalar tensor representing the cross-entropy loss.
         """
         # Compute the cross-entropy loss
+        # Defensive casting: CE expects class indices (int64). If float slipped through, cast.
+        if targets.dtype != torch.long:
+            targets = targets.long()
         loss = self.loss_fn(inputs, targets)
 
         return loss

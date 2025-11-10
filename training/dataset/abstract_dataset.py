@@ -72,6 +72,7 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
         # Set the dataset dictionary based on the mode
         if mode == 'train':
             dataset_list = config['train_dataset']
+            self.dataset_list = list(dataset_list) if isinstance(dataset_list, (list, tuple)) else [dataset_list]
             # Training data should be collected together for training
             image_list, label_list = [], []
             for one_data in dataset_list:
@@ -90,6 +91,8 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
                     self.env = lmdb.open(lmdb_path, create=False, subdir=True, readonly=True, lock=False)
         elif mode == 'test':
             one_data = config['test_dataset']
+            # For completeness; not used by training loop, but keeps symmetry
+            self.dataset_list = [one_data] if not isinstance(one_data, (list, tuple)) else list(one_data)
             # Test dataset should be evaluated separately. So collect only one dataset each time
             image_list, label_list, name_list = self.collect_img_and_label_for_one_dataset(one_data)
             if self.lmdb:
@@ -296,8 +299,8 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
         size = self.config['resolution'] # if self.mode == "train" else self.config['resolution']
         if not self.lmdb:
             if not file_path[0] == '.':
-                file_path =  f'./{self.config["rgb_dir"]}\\'+file_path
-            assert os.path.exists(file_path), f"{file_path} does not exist"
+                file_path =  f'./{self.config["rgb_dir"]}/'+file_path
+            assert os.path.exists(file_path), f"{file_path} does not exist,current path:{os.getcwd()}"
             img = cv2.imread(file_path)
             if img is None:
                 raise ValueError('Loaded image is None: {}'.format(file_path))
@@ -305,7 +308,7 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
             with self.env.begin(write=False) as txn:
                 # transfer the path format from rgb-path to lmdb-key
                 if file_path[0]=='.':
-                    file_path=file_path.replace('./datasets\\','')
+                    file_path=file_path.replace('./datasets/','')
 
                 image_bin = txn.get(file_path.encode())
                 image_buf = np.frombuffer(image_bin, dtype=np.uint8)
@@ -333,7 +336,7 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
             return np.zeros((size, size, 1))
         if not self.lmdb:
             if not file_path[0] == '.':
-                file_path =  f'./{self.config["rgb_dir"]}\\'+file_path
+                file_path =  f'./{self.config["rgb_dir"]}/'+file_path
             if os.path.exists(file_path):
                 mask = cv2.imread(file_path, 0)
                 if mask is None:
@@ -344,7 +347,7 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
             with self.env.begin(write=False) as txn:
                 # transfer the path format from rgb-path to lmdb-key
                 if file_path[0]=='.':
-                    file_path=file_path.replace('./datasets\\','')
+                    file_path=file_path.replace('./datasets/','')
 
                 image_bin = txn.get(file_path.encode())
                 if image_bin is None:
@@ -374,7 +377,7 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
             return np.zeros((81, 2))
         if not self.lmdb:
             if not file_path[0] == '.':
-                file_path =  f'./{self.config["rgb_dir"]}\\'+file_path
+                file_path =  f'./{self.config["rgb_dir"]}/'+file_path
             if os.path.exists(file_path):
                 landmark = np.load(file_path)
             else:
@@ -383,7 +386,7 @@ class DeepfakeAbstractBaseDataset(data.Dataset):
             with self.env.begin(write=False) as txn:
                 # transfer the path format from rgb-path to lmdb-key
                 if file_path[0]=='.':
-                    file_path=file_path.replace('./datasets\\','')
+                    file_path=file_path.replace('./datasets/','')
                 binary = txn.get(file_path.encode())
                 landmark = np.frombuffer(binary, dtype=np.uint32).reshape((81, 2))
                 landmark=self.rescale_landmarks(np.float32(landmark), original_size=256, new_size=self.config['resolution'])

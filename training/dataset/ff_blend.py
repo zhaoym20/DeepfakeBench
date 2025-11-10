@@ -161,7 +161,7 @@ class FFBlendDataset(data.Dataset):
         size = self.config['resolution'] # if self.mode == "train" else self.config['resolution']
         if not self.lmdb:
             if not file_path[0] == '.':
-                file_path =  f'./{self.config["rgb_dir"]}\\'+file_path
+                file_path =  f'./{self.config["rgb_dir"]}/'+file_path
             assert os.path.exists(file_path), f"{file_path} does not exist"
             img = cv2.imread(file_path)
             if img is None:
@@ -170,7 +170,7 @@ class FFBlendDataset(data.Dataset):
             with self.env.begin(write=False) as txn:
                 # transfer the path format from rgb-path to lmdb-key
                 if file_path[0]=='.':
-                    file_path=file_path.replace('./datasets\\','')
+                    file_path=file_path.replace('./datasets/','')
 
                 image_bin = txn.get(file_path.encode())
                 image_buf = np.frombuffer(image_bin, dtype=np.uint8)
@@ -196,7 +196,7 @@ class FFBlendDataset(data.Dataset):
         size = self.config['resolution']
         if file_path is None:
             if not file_path[0] == '.':
-                file_path =  f'./{self.config["rgb_dir"]}\\'+file_path
+                file_path =  f'./{self.config["rgb_dir"]}/'+file_path
             return np.zeros((size, size, 1))
         if not self.lmdb:
             if os.path.exists(file_path):
@@ -209,7 +209,7 @@ class FFBlendDataset(data.Dataset):
             with self.env.begin(write=False) as txn:
                 # transfer the path format from rgb-path to lmdb-key
                 if file_path[0]=='.':
-                    file_path=file_path.replace('./datasets\\','')
+                    file_path=file_path.replace('./datasets/','')
                 image_bin = txn.get(file_path.encode())
                 image_buf = np.frombuffer(image_bin, dtype=np.uint8)
                 # cv2.IMREAD_GRAYSCALE为灰度图，cv2.IMREAD_COLOR为彩色图
@@ -235,7 +235,7 @@ class FFBlendDataset(data.Dataset):
             return np.zeros((81, 2))
         if not self.lmdb:
             if not file_path[0] == '.':
-                file_path =  f'./{self.config["rgb_dir"]}\\'+file_path
+                file_path =  f'./{self.config["rgb_dir"]}/'+file_path
             if os.path.exists(file_path):
                 landmark = np.load(file_path)
             else:
@@ -244,7 +244,7 @@ class FFBlendDataset(data.Dataset):
             with self.env.begin(write=False) as txn:
                 # transfer the path format from rgb-path to lmdb-key
                 if file_path[0]=='.':
-                    file_path=file_path.replace('./datasets\\','')
+                    file_path=file_path.replace('./datasets/','')
                 binary = txn.get(file_path.encode())
                 landmark = np.frombuffer(binary, dtype=np.uint32).reshape((81, 2))
         return np.float32(landmark)
@@ -542,31 +542,31 @@ class FFBlendDataset(data.Dataset):
         return len(self.imid_list)
 
 
-if __name__ == "__main__":
-    dataset = FFBlendDataset()
-    print('dataset lenth: ', len(dataset))
+# if __name__ == "__main__":
+#     dataset = FFBlendDataset()
+#     print('dataset lenth: ', len(dataset))
 
-    def tensor2bgr(im):
-        img = im.squeeze().cpu().numpy().transpose(1, 2, 0)
-        img = (img + 1)/2 * 255
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        return img
+#     def tensor2bgr(im):
+#         img = im.squeeze().cpu().numpy().transpose(1, 2, 0)
+#         img = (img + 1)/2 * 255
+#         img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+#         return img
 
-    def tensor2gray(im):
-        img = im.squeeze().cpu().numpy()
-        img = img * 255
-        return img
+#     def tensor2gray(im):
+#         img = im.squeeze().cpu().numpy()
+#         img = img * 255
+#         return img
 
-    for i, data_dict in enumerate(dataset):
-        if i > 20:
-            break
-        if label == 1:
-            if not use_mouth:
-                img, boudary = im
-                cv2.imwrite('{}_whole.png'.format(i), tensor2bgr(img))
-                cv2.imwrite('{}_boudnary.png'.format(i), tensor2gray(boudary))
-            else:
-                img, mouth, boudary = im
-                cv2.imwrite('{}_whole.png'.format(i), tensor2bgr(img))
-                cv2.imwrite('{}_mouth.png'.format(i), tensor2bgr(mouth))
-                cv2.imwrite('{}_boudnary.png'.format(i), tensor2gray(boudary))
+#     for i, data_dict in enumerate(dataset):
+#         if i > 20:
+#             break
+#         if label == 1:
+#             if not use_mouth:
+#                 img, boudary = im
+#                 cv2.imwrite('{}_whole.png'.format(i), tensor2bgr(img))
+#                 cv2.imwrite('{}_boudnary.png'.format(i), tensor2gray(boudary))
+#             else:
+#                 img, mouth, boudary = im
+#                 cv2.imwrite('{}_whole.png'.format(i), tensor2bgr(img))
+#                 cv2.imwrite('{}_mouth.png'.format(i), tensor2bgr(mouth))
+#                 cv2.imwrite('{}_boudnary.png'.format(i), tensor2gray(boudary))
